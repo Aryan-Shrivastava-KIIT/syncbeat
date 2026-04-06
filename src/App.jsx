@@ -49,7 +49,7 @@ function App() {
       // Save the token to state
       setAccessToken(access_token);
       // Clean the token out of the URL so it doesn't show in the address bar
-      window.history.replaceState({}, document.title, '/');
+      
       console.log('✅ Got Spotify access token');
     } else {
       // Check if we saved a token earlier in sessionStorage
