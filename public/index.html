@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <title>Spotify BeatSync 🎵</title>
+
+    <!-- Google Fonts: Syne (display) + DM Sans (body) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      /* Base reset so there's no white flash on load */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        background: #0a0a0f;
+        font-family: 'DM Sans', sans-serif;
+        overflow-x: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+
+    <!-- ✅ Root div where React mounts the whole app -->
+    <div id="root"></div>
+
+    <!--
+      🎵 Spotify Web Playback SDK
+      This MUST be loaded before your React app tries to use window.Spotify
+      Spotify injects the `window.Spotify` object once this script runs.
+    -->
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
+
+    <!--
+      This global callback fires as soon as the SDK is ready.
+      We store a flag so our React hook knows when it's safe to create a Player.
+    -->
+    <script>
+      window.onSpotifyWebPlaybackSDKReady = () => {
+        window.spotifySDKReady = true;
+        // Dispatch a custom event so React hooks can listen for it
+        window.dispatchEvent(new Event('spotify-sdk-ready'));
+        console.log('✅ Spotify Web Playback SDK is ready');
+      };
+    </script>
+  </body>
+</html>
