@@ -22,7 +22,7 @@ export const SPOTIFY_CLIENT_ID = '345ee47d24cf46ed98ad4fc8c7b1c43a'; // 👈 Rep
 // The URI Spotify redirects back to after the user logs in.
 // For local development, use http://localhost:3000
 // For GitHub Pages, use https://YOUR_USERNAME.github.io/spotify-beatsync
-export const REDIRECT_URI = 'https://aryan-shrivastava-kiit.github.io/syncbeat/'; // 👈 Change for production
+export const REDIRECT_URI = 'https://syncbeat-psi.vercel.app/'; // 👈 Change for production
 
 // These are the Spotify permission scopes we need:
 // - streaming: play music via the Web Playback SDK
