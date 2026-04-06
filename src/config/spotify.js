@@ -41,7 +41,7 @@ export const SCOPES = [
 export const getAuthUrl = () => {
   const params = new URLSearchParams({
     client_id: SPOTIFY_CLIENT_ID,
-    response_type: 'code',       // Implicit Grant — returns token in URL hash
+    response_type: 'token',       // Implicit Grant — returns token in URL hash
     redirect_uri: REDIRECT_URI,
     scope: SCOPES,
     show_dialog: true,            // Always show the login dialog (good for testing)
