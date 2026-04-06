@@ -1,201 +1,111 @@
 // ============================================================
-//  📁 src/hooks/useFirebaseSync.js
-//  🔥 Core real-time sync logic using Firebase Realtime Database
+//  📁 src/hooks/useSpotifyPlayer.js
+//  🎵 Custom React hook that manages the Spotify Web Playback SDK
 // ============================================================
 //
-//  HOW THE SYNC WORKS (0-lag approach):
-//
-//  HOST:
-//    Every second, the Host writes this to Firebase:
-//    {
-//      track_uri: "spotify:track:...",
-//      position_ms: 45200,         ← current position in the song
-//      is_playing: true,
-//      server_timestamp: 1700000000000  ← when the host wrote this
-//    }
-//
-//  LISTENER:
-//    On each Firebase update, the Listener:
-//    1. Reads position_ms and server_timestamp from Firebase
-//    2. Calculates how much time has passed since the host wrote: delta = now - server_timestamp
-//    3. Seeks to: position_ms + delta  (this compensates for network delay!)
-//    4. Plays the same track
-//
-//  RESULT: ~0ms lag because we account for the time data took to travel.
+//  What this hook does:
+//  - Waits for the Spotify SDK script to load
+//  - Creates a Spotify Player in the user's browser (acts as a virtual device)
+//  - Connects the player so Spotify knows it exists
+//  - Returns the player instance and current playback state
 // ============================================================
 
-import { useEffect, useRef, useCallback } from 'react';
-import { db } from '../config/firebase';
-import { ref, set, onValue, serverTimestamp } from 'firebase/database';
+import { useState, useEffect, useRef } from 'react';
 
-const useFirebaseSync = ({
-  roomId,        // A short room code like "ROOM123"
-  isHost,        // true = this user controls playback
-  player,        // Spotify Player object from useSpotifyPlayer
-  playerState,   // Current Spotify playback state
-  deviceId,      // This browser tab's Spotify device ID
-  accessToken,   // Spotify access token (needed to start playback via HTTP API)
-}) => {
+const useSpotifyPlayer = (accessToken) => {
+  // The Spotify Player object (our virtual speaker)
+  const [player, setPlayer] = useState(null);
 
-  // Keep a ref to avoid stale closures in intervals
-  const syncIntervalRef = useRef(null);
+  // Spotify's internal ID for this browser tab's player
+  const [deviceId, setDeviceId] = useState(null);
 
-  // ---- Firebase path for this room ----
-  // All sync data for a room lives at /rooms/{roomId}/playback
-  const roomRef = ref(db, `rooms/${roomId}/playback`);
+  // The current track info, position, paused/playing state
+  const [playerState, setPlayerState] = useState(null);
 
-  // ============================================================
-  //  HOST: Push current playback state to Firebase every second
-  // ============================================================
-  const startHostSync = useCallback(() => {
-    if (!isHost || !player) return;
+  // Whether the player is ready to receive commands
+  const [isReady, setIsReady] = useState(false);
 
-    console.log('👑 Starting HOST sync...');
+  // Use a ref so we can clean up the player on unmount
+  const playerRef = useRef(null);
 
-    syncIntervalRef.current = setInterval(async () => {
-      try {
-        // Ask the Spotify SDK for the latest state
-        const state = await player.getCurrentState();
-        if (!state) return;
-
-        const { track_window, position, paused } = state;
-        const currentTrack = track_window.current_track;
-
-        // Write to Firebase. serverTimestamp() is Firebase's built-in clock.
-        await set(roomRef, {
-          track_uri: currentTrack.uri,                   // e.g. "spotify:track:6rqhFgbbKwnb9MLmUQDhG6"
-          track_name: currentTrack.name,
-          artist_name: currentTrack.artists[0].name,
-          album_art: currentTrack.album.images[0]?.url,
-          position_ms: position,                         // Current ms position
-          is_playing: !paused,
-          host_timestamp: Date.now(),                    // Client timestamp for lag compensation
-        });
-      } catch (err) {
-        console.error('Firebase write error:', err);
-      }
-    }, 1000); // Write every 1 second
-
-  }, [isHost, player, roomRef]);
-
-  // ============================================================
-  //  LISTENER: Subscribe to Firebase and mirror the host's state
-  // ============================================================
-  const startListenerSync = useCallback(() => {
-    if (isHost || !player || !accessToken || !deviceId) return;
-
-    console.log('🎧 Starting LISTENER sync...');
-
-    // onValue fires immediately and on every subsequent change
-    const unsubscribe = onValue(roomRef, async (snapshot) => {
-      const data = snapshot.val();
-      if (!data) return;
-
-      const {
-        track_uri,
-        position_ms,
-        is_playing,
-        host_timestamp,
-      } = data;
-
-      // ---- Lag compensation math ----
-      // Calculate how many ms have passed since the host wrote to Firebase
-      const networkDelta = Date.now() - host_timestamp;
-
-      // The real position we should be at right now
-      const correctedPosition = position_ms + networkDelta;
-
-      console.log(`🔄 Syncing | Host pos: ${position_ms}ms | Delta: ${networkDelta}ms | Seeking to: ${correctedPosition}ms`);
-
-      try {
-        // Step 1: Tell Spotify to play this track on THIS device
-        // We use the Web API (not the SDK) to transfer playback and seek
-        await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-          method: 'PUT',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            uris: [track_uri],
-            position_ms: correctedPosition,  // Start exactly where the host is
-          }),
-        });
-
-        // Step 2: Sync pause/play state
-        if (!is_playing) {
-          await fetch('https://api.spotify.com/v1/me/player/pause', {
-            method: 'PUT',
-            headers: { 'Authorization': `Bearer ${accessToken}` },
-          });
-        }
-      } catch (err) {
-        console.error('Listener sync error:', err);
-      }
-    });
-
-    // Return the unsubscribe function so we can clean up
-    return unsubscribe;
-  }, [isHost, player, accessToken, deviceId, roomRef]);
-
-  // ---- Run the right sync mode based on role ----
   useEffect(() => {
-    let unsubscribe;
+    // Don't do anything until we have a valid Spotify token
+    if (!accessToken) return;
 
-    if (isHost) {
-      startHostSync();
+    // Helper: actually creates the player (called once SDK is ready)
+    const initPlayer = () => {
+      // window.Spotify is injected by the SDK script in index.html
+      const spotifyPlayer = new window.Spotify.Player({
+        name: 'BeatSync 🎵',       // Name shown in Spotify's device list
+        getOAuthToken: (cb) => {
+          // Spotify calls this function whenever it needs a fresh token
+          cb(accessToken);
+        },
+        volume: 0.8,               // Start at 80% volume
+      });
+
+      // ---- Event Listeners ----
+
+      // Fires when the player is successfully connected to Spotify
+      spotifyPlayer.addListener('ready', ({ device_id }) => {
+        console.log('✅ Spotify Player ready! Device ID:', device_id);
+        setDeviceId(device_id);
+        setIsReady(true);
+      });
+
+      // Fires if the player disconnects
+      spotifyPlayer.addListener('not_ready', ({ device_id }) => {
+        console.warn('⚠️ Player device went offline:', device_id);
+        setIsReady(false);
+      });
+
+      // Fires every time the playback state changes (new track, pause, seek…)
+      spotifyPlayer.addListener('player_state_changed', (state) => {
+        if (!state) return;
+        setPlayerState(state); // Save the whole state object
+      });
+
+      // Log any errors from the SDK
+      spotifyPlayer.addListener('initialization_error', ({ message }) =>
+        console.error('Init error:', message)
+      );
+      spotifyPlayer.addListener('authentication_error', ({ message }) =>
+        console.error('Auth error:', message)
+      );
+      spotifyPlayer.addListener('account_error', ({ message }) =>
+        console.error('Account error (Premium required):', message)
+      );
+
+      // Connect the player to Spotify's servers
+      spotifyPlayer.connect().then((success) => {
+        if (success) console.log('🔗 Connected to Spotify');
+      });
+
+      // Save references so we can clean up later
+      playerRef.current = spotifyPlayer;
+      setPlayer(spotifyPlayer);
+    };
+
+    // If the SDK already loaded before this component mounted, init immediately
+    if (window.spotifySDKReady) {
+      initPlayer();
     } else {
-      unsubscribe = startListenerSync();
+      // Otherwise wait for the custom event we fire in index.html
+      const handleSDKReady = () => initPlayer();
+      window.addEventListener('spotify-sdk-ready', handleSDKReady);
+      return () => window.removeEventListener('spotify-sdk-ready', handleSDKReady);
     }
 
-    // Cleanup when component unmounts or role changes
+    // Cleanup: disconnect the player when the component unmounts
     return () => {
-      if (syncIntervalRef.current) {
-        clearInterval(syncIntervalRef.current);
-      }
-      if (unsubscribe) {
-        unsubscribe();
+      if (playerRef.current) {
+        playerRef.current.disconnect();
+        console.log('🔌 Spotify player disconnected');
       }
     };
-  }, [isHost, startHostSync, startListenerSync]);
+  }, [accessToken]); // Re-run if token changes (e.g. user re-logs in)
 
-  // ============================================================
-  //  HOST CONTROLS: These functions are only used by the Host
-  //  to control playback. Listeners just follow along.
-  // ============================================================
-
-  // Play a specific track (Host only)
-  const playTrack = async (trackUri) => {
-    if (!isHost || !deviceId || !accessToken) return;
-    await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ uris: [trackUri] }),
-    });
-  };
-
-  // Toggle pause/play (Host only)
-  const togglePlay = async () => {
-    if (!player || !isHost) return;
-    await player.togglePlay();
-  };
-
-  // Skip to next track (Host only)
-  const nextTrack = async () => {
-    if (!player || !isHost) return;
-    await player.nextTrack();
-  };
-
-  // Skip to previous track (Host only)
-  const prevTrack = async () => {
-    if (!player || !isHost) return;
-    await player.previousTrack();
-  };
-
-  return { playTrack, togglePlay, nextTrack, prevTrack };
+  return { player, deviceId, playerState, isReady };
 };
 
-export default useFirebaseSync;
+export default useSpotifyPlayer;
